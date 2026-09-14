@@ -1,0 +1,7 @@
+{
+  "_comment": "Only Firestore lives here. The site itself is hosted on Cloudflare Pages, so there is deliberately no `hosting` section. This file exists so `firebase deploy --only firestore:rules` works; you can also just paste firestore.rules into the Firebase Console.",
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

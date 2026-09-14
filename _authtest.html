@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <title>auth check</title>
+  </head>
+  <body>
+    <pre id="out">running…</pre>
+
+    <script src="js/core/util.js"></script>
+    <script src="js/core/constants.js"></script>
+    <script src="js/core/topics.js"></script>
+    <script src="js/core/store.js"></script>
+    <script src="js/core/firebaseClient.js"></script>
+    <script src="js/core/auth.js"></script>
+
+    <script>
+      // Registration against a fake Firebase, with the timing that broke it.
+      //
+      // `createUserWithEmailAndPassword()` signs the new account in straight
+      // away, so `onAuthStateChanged` fires while `register()` is still
+      // awaiting `updateProfile()`. The listener reaches users/{uid} first.
+      //
+      // The fake enforces the one firestore.rules clause that turned that race
+      // into a permanent wrong answer: an update may not change `role`. So a
+      // listener that guesses 'student' does not merely lose a coin toss — it
+      // locks the account out of ever becoming a teacher. Every teacher
+      // sign-up silently came out a student until this was fixed.
+      (function () {
+        var AM = window.AM;
+        var lines = [];
+        var pass = 0, fail = 0;
+        var delay = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+        function check(name, cond, detail) {
+          if (cond) { pass++; lines.push('PASS  ' + name); }
+          else { fail++; lines.push('FAIL  ' + name + '  -> ' + detail); }
+        }
+
+        // ---- fake Firestore, enforcing the immutable-role rule -------------
+        var docs = {};
+        var writeLog = [];
+
+        function write(path, data, kind) {
+          var exists = Object.prototype.hasOwnProperty.call(docs, path);
+          if (exists && data.role !== undefined && docs[path].role !== data.role) {
+            writeLog.push('REJECTED ' + kind + ' (' + docs[path].role + ' -> ' + data.role + ')');
+            var err = new Error('Missing or insufficient permissions.');
+            err.code = 'permission-denied';
+            return Promise.reject(err);
+          }
+          writeLog.push(kind + ' role=' + data.role);
+          docs[path] = Object.assign({}, docs[path] || {}, data);
+          return delay(5);
+        }
+
+        function docRef(path) {
+          return {
+            get: async function () {
+              await delay(15); // a real read is a network round trip
+              return {
+                exists: Object.prototype.hasOwnProperty.call(docs, path),
+                id: path.split('/').pop(),
+                data: function () { return docs[path]; },
+              };
+            },
+            set: function (d) { return write(path, d, 'set'); },
+            update: function (d) { return write(path, d, 'update'); },
+          };
+        }
+
+        // ---- fake Auth -----------------------------------------------------
+        var authListener = null;
+        var currentUser = null;
+        var nextUid = 1;
+        var createShouldFail = false;
+
+        AM.fb.isReady = function () { return true; };
+        AM.fb.serverTimestamp = function () { return '<ts>'; };
+        AM.fb.db = function () {
+          return { collection: function (c) { return { doc: function (d) { return docRef(c + '/' + d); } }; } };
+        };
+        AM.fb.auth = function () {
+          return {
+            onAuthStateChanged: function (cb) { authListener = cb; cb(currentUser); },
+            createUserWithEmailAndPassword: async function (email) {
+              if (createShouldFail) {
+                var e = new Error('Email này đã được đăng ký.');
+                e.code = 'auth/email-already-in-use';
+                throw e;
+              }
+              var user = {
+                uid: 'uid-' + nextUid++,
+                email: email,
+                displayName: '',
+                updateProfile: async function (p) {
+                  await delay(20); // deliberately slower than the listener's read
+                  user.displayName = p.displayName;
+                },
+              };
+              currentUser = user;
+              // Firebase fires the listener the moment the account exists.
+              Promise.resolve().then(function () { if (authListener) authListener(user); });
+              return { user: user };
+            },
+            signOut: async function () { currentUser = null; },
+          };
+        };
+
+        /** Register one account and report what the app ended up believing. */
+        async function signUp(email, name, role) {
+          writeLog = [];
+          var thrown = null;
+          try {
+            await AM.auth.register(email, 'matkhau123', name, role);
+          } catch (e) {
+            thrown = e.code || e.message;
+          }
+          await delay(120); // let the auth-state listener finish
+          var uid = AM.auth.currentUser() ? AM.auth.currentUser().uid : null;
+          return {
+            thrown: thrown,
+            stored: uid ? (docs['users/' + uid] || {}) : {},
+            log: writeLog.slice(),
+          };
+        }
+
+        /** Back to signed-out, without going through signOut()'s sync teardown. */
+        function reset() {
+          currentUser = null;
+          if (authListener) authListener(null);
+        }
+
+        (async function () {
+          await AM.auth.init();
+
+          // --- 1. the regression itself -------------------------------------
+          var t = await signUp('co.hoa@example.com', 'Cô Hoa', 'teacher');
+          check('đăng ký giáo viên: không bị rules từ chối', t.thrown === null, t.thrown);
+          check('đăng ký giáo viên: Firestore lưu teacher', t.stored.role === 'teacher', t.stored.role);
+          check('đăng ký giáo viên: bộ nhớ hiểu teacher', AM.auth.role() === 'teacher', AM.auth.role());
+          check('đăng ký giáo viên: isTeacher()', AM.auth.isTeacher() === true, AM.auth.isTeacher());
+          check('đăng ký giáo viên: không có lệnh ghi nào bị từ chối',
+                t.log.every(function (l) { return l.indexOf('REJECTED') === -1; }), t.log.join(' | '));
+          check('đăng ký giáo viên: giữ đúng họ tên đã nhập',
+                AM.auth.displayName() === 'Cô Hoa', AM.auth.displayName());
+          check('giáo viên KHÔNG bị coi là học sinh', AM.auth.isStudent() === false, AM.auth.isStudent());
+
+          // --- 2. students still work ---------------------------------------
+          reset();
+          var s = await signUp('an@example.com', 'Nguyễn Văn An', 'student');
+          check('đăng ký học sinh: Firestore lưu student', s.stored.role === 'student', s.stored.role);
+          check('đăng ký học sinh: isStudent()', AM.auth.isStudent() === true, AM.auth.isStudent());
+          check('học sinh KHÔNG có quyền giáo viên', AM.auth.isTeacher() === false, AM.auth.isTeacher());
+
+          // --- 3. a tampered client cannot pick admin -----------------------
+          reset();
+          var a = await signUp('ke.gian@example.com', 'Kẻ Gian', 'admin');
+          check('vai trò "admin" bị hạ xuống student', a.stored.role === 'student', a.stored.role);
+          check('vai trò rác bị hạ xuống student',
+                (await (async function () { reset(); return (await signUp('x@example.com', 'X', 'wizard')).stored.role; })()) === 'student',
+                'không phải student');
+
+          // --- 4. a failed sign-up must not colour the next one -------------
+          reset();
+          createShouldFail = true;
+          var failed = await signUp('trung@example.com', 'Trùng', 'teacher');
+          check('đăng ký lỗi thì ném lỗi', failed.thrown === 'auth/email-already-in-use', failed.thrown);
+          createShouldFail = false;
+
+          reset();
+          var after = await signUp('binh@example.com', 'Bình', 'student');
+          check('ý định "teacher" thất bại không rớt sang tài khoản sau',
+                after.stored.role === 'student', after.stored.role);
+
+          lines.unshift('==== ' + pass + ' PASS / ' + fail + ' FAIL ====');
+          document.getElementById('out').textContent = lines.join('\n');
+        })();
+      })();
+    </script>
+  </body>
+</html>

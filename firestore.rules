@@ -1,0 +1,182 @@
+rules_version = '2';
+
+// Security rules for AdaptiveMath.
+//
+// The client checks roles too, but only to decide which menu items to draw.
+// These rules are the part that actually enforces anything — a student who
+// edits the JavaScript in DevTools still cannot read another class's roster or
+// promote themselves, because those decisions happen here, on Google's servers.
+//
+// Collections:
+//   users/{uid}                     identity + role + denormalised progress
+//   learners/{uid}/data/{key}       the student's own learning blobs
+//   classes/{code}                  one document per class, id IS the join code
+//   classes/{code}/members/{uid}    roster + a copy of each member's progress
+//
+// Three roles: 'student', 'teacher', 'admin'.
+//
+// student and teacher are both self-selected at registration. That is a real
+// trade-off and worth stating plainly: nothing here stops someone registering
+// as a teacher who is not one. What it does stop is a teacher reaching any
+// student who has not typed their class code — a teacher sees exactly the
+// roster of classes they created, and nothing else.
+//
+// admin stays a manual grant (register normally, then flip `role` to "admin"
+// in the Firebase console). There is no admin password in the client, because
+// anything shipped to a browser can be read by pressing F12.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function hasProfile() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return hasProfile() && myRole() == 'admin';
+    }
+
+    function isTeacher() {
+      return hasProfile() && myRole() == 'teacher';
+    }
+
+    /** The uid that owns the given class, or null when the class is gone. */
+    function classOwner(code) {
+      return get(/databases/$(database)/documents/classes/$(code)).data.teacherId;
+    }
+
+    function ownsClass(code) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/classes/$(code))
+        && classOwner(code) == request.auth.uid;
+    }
+
+    // -----------------------------------------------------------------------
+    // users/{uid} — one document per account
+    // -----------------------------------------------------------------------
+    match /users/{uid} {
+
+      // A student reads only their own document; an admin reads any of them.
+      // Teachers deliberately do NOT get blanket read access here — they read
+      // their students through classes/{code}/members instead, which is scoped
+      // to a roster the students opted into by entering the code.
+      allow get: if isSelf(uid) || isAdmin();
+
+      // Listing the whole collection is the admin roster query.
+      allow list: if isAdmin();
+
+      // Registration. The role is pinned to student-or-teacher: a tampered
+      // client cannot create itself as an admin.
+      allow create: if isSelf(uid)
+        && request.resource.data.role in ['student', 'teacher']
+        && request.resource.data.email is string;
+
+      // Anyone may update their own progress summary but never their own role.
+      // Comparing against `resource.data.role` is the whole point — without it
+      // the summary write would double as a privilege escalation. The list of
+      // touchable keys is closed too, so identity fields (email, displayName,
+      // createdAt) cannot be rewritten from a tampered client either.
+      allow update: if isAdmin()
+        || (isSelf(uid)
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'classCode', 'className', 'grade', 'goal', 'dailyMinutes',
+              'hasDiagnostic', 'xp', 'level', 'currentStreak', 'longestStreak',
+              'masteredTopics', 'totalQuestions', 'totalSessions',
+              'unresolvedErrors', 'lastActiveAt', 'lastLoginAt']));
+
+      // Deleting an account is an admin-console operation, not a client one.
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------------
+    // learners/{uid}/data/{key} — profile, diagnostic, learner, path
+    //
+    // Owner-only, deliberately. Teachers see progress *summaries* mirrored onto
+    // the class member document, so no teacher ever needs access to a student's
+    // raw answers.
+    // -----------------------------------------------------------------------
+    match /learners/{uid}/data/{key} {
+      allow read, write: if isSelf(uid);
+    }
+
+    // -----------------------------------------------------------------------
+    // classes/{code} — the document id IS the six-character join code
+    //
+    // Using the code as the id means a student joining does a direct `get()`
+    // on a known path instead of a `where('code','==',…)` query. That removes
+    // the need to let anyone list this collection, which would have handed out
+    // every join code in the database.
+    // -----------------------------------------------------------------------
+    match /classes/{code} {
+
+      // Anyone signed in may resolve a code they were given. Knowing the code
+      // is the access mechanism, so this is intended rather than a leak.
+      allow get: if signedIn();
+
+      // The teacher's own "my classes" query. Firestore only permits a list
+      // whose filters guarantee every matched document satisfies this rule, so
+      // the client query MUST carry .where('teacherId','==',uid) — an
+      // unfiltered list of all classes is rejected outright.
+      allow list: if signedIn() && resource.data.teacherId == request.auth.uid;
+
+      allow create: if isTeacher()
+        && request.resource.data.teacherId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0;
+
+      // Renaming or archiving stays with the owner, and the owner cannot be
+      // reassigned — otherwise a class could be walked to another account.
+      allow update: if ownsClass(code)
+        && request.resource.data.teacherId == resource.data.teacherId;
+
+      allow delete: if ownsClass(code);
+    }
+
+    // -----------------------------------------------------------------------
+    // classes/{code}/members/{uid} — roster + mirrored progress summary
+    // -----------------------------------------------------------------------
+    match /classes/{code}/members/{uid} {
+
+      allow get: if isSelf(uid) || ownsClass(code);
+
+      // The teacher's roster query. Scoped to one class by the path itself.
+      allow list: if ownsClass(code);
+
+      // Joining. A student writes their own membership row and nobody else's;
+      // teachers are kept out so a class cannot be padded with accounts that
+      // never agreed to join. The class must exist: otherwise a client whose
+      // class was deleted keeps recreating orphan rows under the dead code,
+      // and a future class that lands on the same code inherits them.
+      allow create: if isSelf(uid)
+        && request.resource.data.uid == uid
+        && exists(/databases/$(database)/documents/classes/$(code));
+
+      // The student updates their own row (progress mirror + help requests),
+      // but cannot mark their own question as answered or forge a reply.
+      // The teacher updates it only to answer or clear a help request.
+      allow update: if (isSelf(uid)
+          && request.resource.data.uid == resource.data.uid
+          && (!('help' in request.resource.data)
+              || request.resource.data.help.status == 'pending'))
+        || (ownsClass(code)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['help']));
+
+      // A student may leave; a teacher may remove someone from their class.
+      allow delete: if isSelf(uid) || ownsClass(code);
+    }
+  }
+}

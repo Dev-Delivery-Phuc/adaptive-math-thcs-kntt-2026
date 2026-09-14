@@ -1,0 +1,5 @@
+{
+  "_comment": "No composite indexes needed. The admin roster fetches the users collection and filters/sorts in memory; a student only ever reads documents by id. Both are served by Firestore's automatic single-field indexes.",
+  "indexes": [],
+  "fieldOverrides": []
+}

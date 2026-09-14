@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AdaptiveMath — self test</title>
+  </head>
+  <body>
+    <pre id="out">running…</pre>
+
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+    <script src="data/questions.js"></script>
+    <script src="data/examples.js"></script>
+    <script src="js/core/util.js"></script>
+    <script src="js/core/constants.js"></script>
+    <script src="js/core/topics.js"></script>
+    <script src="js/core/store.js"></script>
+    <script src="js/core/firebaseClient.js"></script>
+    <script src="js/core/auth.js"></script>
+    <script src="js/core/sync.js"></script>
+    <script src="js/core/classroom.js"></script>
+    <script src="js/core/questionBank.js"></script>
+    <script src="js/core/latex.js"></script>
+    <script src="js/core/irt.js"></script>
+    <script src="js/core/cat.js"></script>
+    <script src="js/core/bkt.js"></script>
+    <script src="js/core/srs.js"></script>
+    <script src="js/core/adaptiveEngine.js"></script>
+    <script src="js/core/profiling.js"></script>
+    <script src="js/core/treeStability.js"></script>
+    <script src="js/core/practiceSelector.js"></script>
+    <script src="js/core/pathGenerator.js"></script>
+    <script src="js/core/todayActivities.js"></script>
+    <script src="js/components.js"></script>
+    <script src="js/views/landing.js"></script>
+    <script src="js/views/login.js"></script>
+    <script src="js/views/admin.js"></script>
+    <script src="js/views/teacher.js"></script>
+    <script src="js/views/classroom.js"></script>
+    <script src="js/views/home.js"></script>
+    <script src="js/views/onboarding.js"></script>
+    <script src="js/views/diagnostic.js"></script>
+    <script src="js/views/profile.js"></script>
+    <script src="js/views/learningPath.js"></script>
+    <script src="js/views/theory.js"></script>
+    <script src="js/views/practice.js"></script>
+    <script src="js/views/errors.js"></script>
+    <script src="js/views/examples.js"></script>
+    <script src="js/router.js"></script>
+
+    <script>
+      // Some checks write to localStorage. Snapshot it first and put it back
+      // afterwards, so running the suite can never cost a real student their
+      // progress — this page is safe to open on the deployed site.
+      var SNAPSHOT = {};
+      (function () {
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          SNAPSHOT[k] = localStorage.getItem(k);
+        }
+      })();
+
+      function restoreStorage() {
+        try {
+          localStorage.clear();
+          Object.keys(SNAPSHOT).forEach(function (k) {
+            localStorage.setItem(k, SNAPSHOT[k]);
+          });
+        } catch (e) {
+          /* nothing more we can do */
+        }
+      }
+
+      var lines = [];
+      var pass = 0;
+      var fail = 0;
+
+      function check(name, fn) {
+        try {
+          var r = fn();
+          if (r === true || r === undefined) {
+            pass++;
+            lines.push('PASS  ' + name);
+          } else {
+            fail++;
+            lines.push('FAIL  ' + name + '  -> ' + r);
+          }
+        } catch (e) {
+          fail++;
+          lines.push('THROW ' + name + '  -> ' + (e && e.message ? e.message : e));
+        }
+      }
+
+      var AM = window.AM;
+
+      // --- 1. Modules present -------------------------------------------------
+      var mods = ['util','const','topics','store','fb','auth','sync','classroom','bank',
+                  'latex','irt','cat','bkt','srs','adaptive','profiling','tree',
+                  'practiceSelector','path','today','ui','router','views'];
+      mods.forEach(function (m) {
+        check('module AM.' + m, function () { return AM[m] ? true : 'thiếu'; });
+      });
+
+      var views = ['landing','login','admin','teacher','classroom','home','onboarding',
+                   'diagnostic','profile','learningPath','theory','practice','errors'];
+      views.forEach(function (v) {
+        check('view ' + v, function () {
+          return typeof AM.views[v] === 'function' ? true : 'không phải hàm';
+        });
+      });
+
+      // --- 2. Question bank ---------------------------------------------------
+      check('bank loaded', function () {
+        return AM.bank.isLoaded && AM.bank.QUESTION_BANK.totalCount >= 891
+          ? true : 'totalCount=' + AM.bank.QUESTION_BANK.totalCount;
+      });
+      check('firebase ready', function () {
+        return AM.fb.isReady() ? true : 'initError=' + AM.fb.initError();
+      });
+
+      // --- 3. IRT -------------------------------------------------------------
+      check('IRT P monotonic in theta', function () {
+        var item = { a: 1.2, b: 0, c: 0.25 };
+        return AM.irt.probabilityCorrect(1, item) > AM.irt.probabilityCorrect(-1, item)
+          ? true : 'không tăng theo θ';
+      });
+      check('IRT all-correct pushes theta up', function () {
+        var items = [], resp = [];
+        for (var i = 0; i < 10; i++) { items.push({a:1.2,b:0,c:0.25}); resp.push(1); }
+        var e = AM.irt.estimateTheta(items, resp);
+        return e.theta > 0.5 && isFinite(e.theta) && isFinite(e.standardError)
+          ? true : 'theta=' + e.theta + ' se=' + e.standardError;
+      });
+      check('IRT all-wrong pushes theta down', function () {
+        var items = [], resp = [];
+        for (var i = 0; i < 10; i++) { items.push({a:1.2,b:0,c:0.25}); resp.push(0); }
+        var e = AM.irt.estimateTheta(items, resp);
+        return e.theta < -0.5 && isFinite(e.theta) ? true : 'theta=' + e.theta;
+      });
+
+      // --- 4. CAT ladder ------------------------------------------------------
+      var pool11 = AM.bank.getPoolForGrade(11);
+      check('pool grade 11 non-empty', function () {
+        return pool11.length > 100 ? true : 'len=' + pool11.length;
+      });
+
+      var session = {
+        sessionId: 'test-session',
+        grade: 11,
+        selfLevel: 'tb',
+        theta: -0.3,
+        standardError: 2,
+        responses: [],
+        shownIds: [],
+        sessionStartedAt: Date.now(),
+        finished: false,
+        stopReason: null,
+        topicStates: AM.cat.initTopicStates(pool11, AM.topics.TOPICS, 11)
+      };
+      var grade11Count = AM.topics.getTopicsByGrade(11).length;
+      check('initTopicStates covers grade-11 topics', function () {
+        var n = Object.keys(session.topicStates).length;
+        return n === grade11Count ? true : 'n=' + n + '/' + grade11Count;
+      });
+
+      // Simulate a whole CAT run: answer everything correctly.
+      var steps = 0;
+      var lastStop = null;
+      while (steps < 80) {
+        lastStop = AM.cat.shouldStop(session);
+        if (lastStop) break;
+        var picked = AM.cat.selectNextQuestionWithDebug(pool11, session);
+        if (!picked) { lastStop = 'no-more-items'; break; }
+        var q = picked.chosen;
+        session.responses.push({
+          questionId: q.id, startedAt: Date.now() - 30000,
+          endedAt: Date.now(), score: 1, answered: true
+        });
+        session.shownIds.push(q.id);
+        session.topicStates[q.topicId] = AM.cat.transitionTopicState(
+          session.topicStates[q.topicId], q, true, pool11, new Set(session.shownIds));
+        steps++;
+      }
+      check('CAT run terminates', function () {
+        return lastStop !== null ? true : 'không dừng sau ' + steps + ' câu';
+      });
+      check('CAT covered every topic', function () {
+        var seen = {};
+        var byId = {};
+        pool11.forEach(function (q) { byId[q.id] = q; });
+        session.responses.forEach(function (r) { seen[byId[r.questionId].topicId] = 1; });
+        var n = Object.keys(seen).length;
+        return n === grade11Count
+          ? true : 'chỉ phủ ' + n + '/' + grade11Count + ' chủ đề trong ' + steps + ' câu';
+      });
+      check('CAT no repeated question', function () {
+        var s = {};
+        for (var i = 0; i < session.shownIds.length; i++) {
+          if (s[session.shownIds[i]]) return 'lặp: ' + session.shownIds[i];
+          s[session.shownIds[i]] = 1;
+        }
+        return true;
+      });
+
+      // --- 5. Grading ---------------------------------------------------------
+      var mcq = pool11.filter(function (q) { return q.type === 'mcq'; })[0];
+      check('gradeAnswer mcq correct = 1', function () {
+        var correct = mcq.options.filter(function (o) { return o.isCorrect; })[0];
+        return AM.cat.gradeAnswer(mcq, correct.label) === 1 ? true : 'sai';
+      });
+      check('gradeAnswer mcq wrong = 0', function () {
+        var wrong = mcq.options.filter(function (o) { return !o.isCorrect; })[0];
+        return AM.cat.gradeAnswer(mcq, wrong.label) === 0 ? true : 'sai';
+      });
+      var tf = pool11.filter(function (q) { return q.type === 'tf'; })[0];
+      check('gradeAnswer tf partial', function () {
+        if (!tf) return true;
+        var all = tf.statements.map(function (s) { return s.isTrue; });
+        if (AM.cat.gradeAnswer(tf, all) !== 1) return 'toàn đúng != 1';
+        var one = all.slice(); one[0] = !one[0];
+        var partial = AM.cat.gradeAnswer(tf, one);
+        return partial > 0 && partial < 1 ? true : 'một phần = ' + partial;
+      });
+
+      // --- 6. Profiling -------------------------------------------------------
+      var profile = {
+        grade: 11, goal: 'thpt-qg', dailyMinutes: 45, deadline: null,
+        selfLevel: 'tb', weakTopicIds: ['1-KNTT-C2B5-X'],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      };
+      var est = AM.irt.estimateThetaFromSession(session.responses, function (id) {
+        var f = pool11.filter(function (q) { return q.id === id; })[0];
+        return f ? f.irt : null;
+      }, {});
+      session.theta = est.theta;
+      session.standardError = est.standardError;
+      session.finished = true;
+      session.stopReason = lastStop;
+
+      var knowledge = null;
+      check('buildKnowledgeProfile runs', function () {
+        knowledge = AM.profiling.buildKnowledgeProfile(session, profile, pool11, AM.topics.TOPICS);
+        return knowledge && knowledge.topics.length === grade11Count
+          ? true : 'topics=' + (knowledge ? knowledge.topics.length : 'null');
+      });
+      check('mastery in [0,1]', function () {
+        for (var i = 0; i < knowledge.topics.length; i++) {
+          var m = knowledge.topics[i].mastery;
+          if (!(m >= 0 && m <= 1)) return knowledge.topics[i].topicId + ' = ' + m;
+        }
+        return true;
+      });
+      check('chapters rolled up', function () {
+        return knowledge.chapters.length > 0 ? true : 'rỗng';
+      });
+
+      // --- 7. Knowledge tree --------------------------------------------------
+      var learner = AM.store.emptyLearnerState();
+      var tree = null;
+      check('buildKnowledgeTree runs', function () {
+        tree = AM.tree.buildKnowledgeTree(knowledge, learner);
+        return tree.branches.length > 0 ? true : 'không có nhánh';
+      });
+      check('stageCounts sums to topic count', function () {
+        var sum = 0;
+        Object.keys(tree.stageCounts).forEach(function (k) { sum += tree.stageCounts[k]; });
+        return sum === grade11Count ? true : 'sum=' + sum;
+      });
+
+      // --- 8. Learning path ---------------------------------------------------
+      var path = null;
+      check('generateLearningPath runs', function () {
+        path = AM.path.generateLearningPath(profile, knowledge, pool11, learner);
+        return path ? true : 'null';
+      });
+      check('path days respect daily budget', function () {
+        for (var s = 0; s < path.sprints.length; s++) {
+          var days = path.sprints[s].days;
+          for (var d = 0; d < days.length; d++) {
+            if (days[d].estimatedMinutes > profile.dailyMinutes + 15) {
+              return 'ngày ' + days[d].dayNumber + ' = ' + days[d].estimatedMinutes + ' phút';
+            }
+          }
+        }
+        return true;
+      });
+      check('path activityIds unique per day', function () {
+        for (var s = 0; s < path.sprints.length; s++) {
+          for (var d = 0; d < path.sprints[s].days.length; d++) {
+            var seen = {};
+            var acts = path.sprints[s].days[d].activities;
+            for (var a = 0; a < acts.length; a++) {
+              if (seen[acts[a].activityId]) return 'trùng ' + acts[a].activityId;
+              seen[acts[a].activityId] = 1;
+            }
+          }
+        }
+        return true;
+      });
+
+      // --- 9. BKT + SRS -------------------------------------------------------
+      check('BKT rises on correct', function () {
+        var s0 = AM.bkt.initBktState(0.3);
+        var s1 = AM.bkt.updateBkt(s0, true);
+        return s1.pL > s0.pL ? true : s0.pL + ' -> ' + s1.pL;
+      });
+      check('BKT reaches mastery after a streak', function () {
+        var s = AM.bkt.initBktState(0.3);
+        for (var i = 0; i < 12; i++) s = AM.bkt.updateBkt(s, true);
+        return AM.bkt.isMastered(s) ? true : 'pL=' + s.pL.toFixed(3);
+      });
+      check('SRS interval grows', function () {
+        var s = AM.srs.initSrsState();
+        s = AM.srs.scheduleReview(s, 5);
+        var i1 = s.intervalDays;
+        s = AM.srs.scheduleReview(s, 5);
+        var i2 = s.intervalDays;
+        s = AM.srs.scheduleReview(s, 5);
+        return (i2 > i1 && s.intervalDays > i2) ? true : i1 + ',' + i2 + ',' + s.intervalDays;
+      });
+      check('SRS resets on failure', function () {
+        var s = AM.srs.initSrsState();
+        s = AM.srs.scheduleReview(s, 5);
+        s = AM.srs.scheduleReview(s, 5);
+        s = AM.srs.scheduleReview(s, 1);
+        return s.intervalDays === 1 && s.consecutiveCorrect === 0 ? true : JSON.stringify(s);
+      });
+
+      // --- 10. Practice selector ---------------------------------------------
+      check('selectPracticeQuestions returns items', function () {
+        var sel = AM.practiceSelector.selectPracticeQuestions(
+          pool11, '1-KNTT-C2B5-X', ['N','H'], learner, [], 12345);
+        return sel.practice.length > 0 ? true : 'practice rỗng';
+      });
+
+      // --- 11. LaTeX rendering ------------------------------------------------
+      check('latex renders prompts without throwing', function () {
+        var bad = 0;
+        for (var i = 0; i < 200; i++) {
+          var html = AM.latex.toHtml(pool11[i].prompt);
+          if (typeof html !== 'string') bad++;
+        }
+        return bad === 0 ? true : bad + ' câu lỗi';
+      });
+      check('latex handles math + table', function () {
+        var h = AM.latex.toHtml('Cho $x^2+1=0$ và \\begin{tabular}{cc} a & b \\\\ 1 & 2 \\end{tabular}');
+        return h.indexOf('kntt-table') !== -1 ? true : 'không có bảng';
+      });
+
+      // --- 12. Store round-trip ----------------------------------------------
+      check('store save/load profile', function () {
+        AM.store.saveProfile(profile);
+        var back = AM.store.loadProfile();
+        return back && back.grade === 11 && back.goal === 'thpt-qg' ? true : JSON.stringify(back);
+      });
+      check('store timestamps recorded', function () {
+        var ts = AM.store.getTimestamps();
+        return typeof ts.profile === 'number' ? true : JSON.stringify(ts);
+      });
+      check('store clearAll wipes', function () {
+        AM.store.clearAll(true);
+        return AM.store.loadProfile() === null ? true : 'vẫn còn';
+      });
+
+      // --- 12b. Vietnamese date helpers (onboarding deadline field) ----------
+      check('parseDateVN dd/mm/yyyy', function () {
+        var r = AM.util.parseDateVN('25/06/2026');
+        return r === '2026-06-25' ? true : r;
+      });
+      check('parseDateVN pads 1-digit day/month, other separators', function () {
+        var a = AM.util.parseDateVN('5/6/2026');
+        var b = AM.util.parseDateVN('05-06-2026');
+        var c = AM.util.parseDateVN('05.06.2026');
+        return a === '2026-06-05' && b === a && c === a ? true : a + ',' + b + ',' + c;
+      });
+      check('parseDateVN rejects impossible dates', function () {
+        var bad = ['31/02/2026', '00/01/2026', '12/13/2026', '1/1/26', 'abc', '', '2026-06-25'];
+        for (var i = 0; i < bad.length; i++) {
+          if (AM.util.parseDateVN(bad[i]) !== null) return 'chấp nhận ' + bad[i];
+        }
+        return true;
+      });
+      check('parseDateVN handles leap years', function () {
+        return AM.util.parseDateVN('29/02/2028') === '2028-02-29' &&
+               AM.util.parseDateVN('29/02/2027') === null ? true : 'sai nhuận';
+      });
+      check('daysFromTodayVN today = 0, tomorrow = 1', function () {
+        var today = AM.util.todayVNStr();
+        var t = AM.util.addDays(new Date(today + 'T00:00:00'), 1);
+        var tomorrow = t.getFullYear() + '-' +
+          String(t.getMonth() + 1).padStart(2, '0') + '-' +
+          String(t.getDate()).padStart(2, '0');
+        var d0 = AM.util.daysFromTodayVN(today);
+        var d1 = AM.util.daysFromTodayVN(tomorrow);
+        return d0 === 0 && d1 === 1 ? true : d0 + ',' + d1;
+      });
+
+      // --- 12c. Calendar-day helpers must never go through UTC ---------------
+      check('dateStr uses the local calendar day', function () {
+        var d = new Date('2026-09-09T00:00:00'); // local midnight
+        var r = AM.util.dateStr(d);
+        return r === '2026-09-09' ? true : r;
+      });
+      check('addDaysStr crosses month boundaries', function () {
+        var a = AM.util.addDaysStr('2026-08-31', 1);
+        var b = AM.util.addDaysStr('2026-03-01', -1);
+        return a === '2026-09-01' && b === '2026-02-28' ? true : a + ',' + b;
+      });
+      check('SRS dates are Vietnam calendar days', function () {
+        var today = AM.util.todayVNStr();
+        var s = AM.srs.initSrsState();
+        if (s.nextReviewDate !== AM.util.addDaysStr(today, 1)) return 'init=' + s.nextReviewDate;
+        var failed = AM.srs.scheduleReview({ nextReviewDate: today, intervalDays: 6,
+          easinessFactor: 2.5, consecutiveCorrect: 3 }, 1);
+        return failed.intervalDays === 1 && failed.nextReviewDate === AM.util.addDaysStr(today, 1)
+          ? true : JSON.stringify(failed);
+      });
+      check('learning path day 1 is today', function () {
+        for (var s = 0; s < path.sprints.length; s++) {
+          var days = path.sprints[s].days;
+          if (days.length) {
+            return days[0].date === AM.util.todayVNStr()
+              ? true : days[0].date + ' != ' + AM.util.todayVNStr();
+          }
+        }
+        return true;
+      });
+      check('path remembers its diagnostic session', function () {
+        return path.diagnosticSessionId === session.sessionId
+          ? true : String(path.diagnosticSessionId);
+      });
+
+      // --- 12d. Short-answer grading accepts numeric equivalents -------------
+      var sa = { type: 'shortans', correctAnswer: '0,5' };
+      check('shortans exact / decimal / fraction / spaces', function () {
+        var ok = ['0,5', '0.5', ' 0.50 ', '1/2', '.5'].every(function (a) {
+          return AM.cat.gradeAnswer(sa, a) === 1;
+        });
+        return ok ? true : 'một dạng bị từ chối';
+      });
+      check('shortans still rejects wrong values', function () {
+        var bad = ['0.6', '1/3', 'abc', '', '5'];
+        for (var i = 0; i < bad.length; i++) {
+          if (AM.cat.gradeAnswer(sa, bad[i]) !== 0) return 'chấp nhận ' + bad[i];
+        }
+        return true;
+      });
+      check('shortans unicode minus', function () {
+        return AM.cat.gradeAnswer({ type: 'shortans', correctAnswer: '-1' }, '\u22121') === 1
+          ? true : 'sai';
+      });
+
+      // --- 12e. Context flags ------------------------------------------------
+      check('unfinished diagnostic does not count as done', function () {
+        AM.store.saveProfile(profile);
+        AM.store.saveDiagnostic(Object.assign({}, session, { finished: false }));
+        var c1 = AM.ui.buildContext();
+        AM.store.saveDiagnostic(Object.assign({}, session, { finished: true, grade: 12 }));
+        var c2 = AM.ui.buildContext();
+        AM.store.saveDiagnostic(session);
+        var c3 = AM.ui.buildContext();
+        AM.store.clearAll(true);
+        return !c1.hasDiagnostic && !c2.hasDiagnostic && c3.hasDiagnostic && c3.knowledge
+          ? true : [c1.hasDiagnostic, c2.hasDiagnostic, c3.hasDiagnostic].join(',');
+      });
+      check('router tolerates a malformed hash', function () {
+        var saved = window.location.hash;
+        try {
+          window.history.replaceState(null, '', '#/theory?topic=%E0%A');
+          var parsed = AM.router.parseHash();
+          return parsed.path === '/theory' && parsed.params.topic === '%E0%A'
+            ? true : JSON.stringify(parsed);
+        } finally {
+          window.history.replaceState(null, '', saved || '#');
+        }
+      });
+
+      // --- 13. Views render ---------------------------------------------------
+      var ctx = AM.ui.buildContext();
+      views.forEach(function (v) {
+        check('render view ' + v, function () {
+          var node = AM.views[v]({}, ctx);
+          var real = node && node.node ? node.node : node;
+          if (node && node.cleanup) node.cleanup();
+          return real && real.nodeType === 1 ? true : 'không trả về element';
+        });
+      });
+
+      // --- Report -------------------------------------------------------------
+      restoreStorage();
+      lines.unshift('==== ' + pass + ' PASS / ' + fail + ' FAIL ====');
+      document.getElementById('out').textContent = lines.join('\n');
+      document.title = fail === 0 ? 'ALL PASS' : fail + ' FAIL';
+    </script>
+  </body>
+</html>

@@ -1,0 +1,39 @@
+# Cloudflare Pages — HTTP headers
+# https://developers.cloudflare.com/pages/configuration/headers/
+#
+# Note there is deliberately no `_redirects` file. The app uses hash routing
+# (#/profile, #/practice…), so every HTTP request is either "/" or a real file
+# on disk. An SPA catch-all rewrite would only hide genuine 404s — a missing
+# data/questions.js would come back as HTML pretending to be JavaScript, which
+# is far harder to diagnose than a plain 404.
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: SAMEORIGIN
+
+# The question bank is 3 MB and changes only when the corpus is rebuilt.
+#
+# The charset is stated explicitly. A classic <script> inherits the document's
+# encoding only when the response says nothing, so a host that ever labelled
+# this file ISO-8859-1 would render every Vietnamese diacritic as mojibake
+# ("mệnh đề" → "má»‡nh Ä‘á»"). The file also keeps its UTF-8 BOM, which pins
+# the decoding a second time.
+/data/*
+  Cache-Control: public, max-age=604800
+  Content-Type: text/javascript; charset=utf-8
+
+# Everything else is served with must-revalidate rather than a max-age.
+#
+# None of these filenames are content-hashed (there is no build step to hash
+# them), so any max-age at all means a redeploy reaches users late and, worse,
+# in pieces: a fresh index.html next to hour-old JavaScript. The files total
+# well under 200 KB and revalidation is a 304, so the cost is a round-trip.
+/js/*
+  Cache-Control: no-cache
+
+/css/*
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache

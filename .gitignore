@@ -1,0 +1,29 @@
+# Đây là dự án tĩnh thuần HTML/CSS/JS — không có bước build, không dependency.
+# Mọi file trong repo đều là file được deploy.
+
+# Editor / OS
+.claude/
+.vercel/
+docs/
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+
+# Logs
+*.log
+
+# Cloudflare Wrangler (nếu sau này dùng CLI để deploy)
+.wrangler/
+
+# Khoá service account của Firebase Admin (dùng cho tools/reset-accounts.js).
+# Khoá này bỏ qua toàn bộ firestore.rules — commit lên là mất cả project.
+tools/service-account.json
+tools/node_modules/
+tools/package-lock.json
+
+# Bản sao lưu ngân hàng câu hỏi trước khi sửa lỗi mojibake (~3 MB).
+data/*.mojibake-backup
